@@ -93,15 +93,19 @@ from twilio.twiml.messaging_response import MessagingResponse
 from email.message import EmailMessage
 import smtplib
 import json
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 
 # Gemini API Configuration
-GEMINI_API_KEY = "AIzaSyA2B1TFb2eO_abpAuZcRTt34mXetRR_AcA"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Email configuration
-EMAIL_USER = "pranavrajeshnarayan@gmail.com"
-EMAIL_PASSWORD = "xeve cmgt zfgi flxr"  # Use an App Password, not your real Gmail password
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD") # Use an App Password, not your real Gmail password
 
 
 def refine_email_content(content):
