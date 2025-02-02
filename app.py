@@ -88,65 +88,80 @@ if __name__ == "__main__":
 import os
 import requests
 import re
+import json
+import base64
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from email.message import EmailMessage
 import smtplib
-import json
 from dotenv import load_dotenv
+from cryptography.fernet import Fernet
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
+# Initialize Flask app
 app = Flask(__name__)
 
-# Gemini API Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Firebase configuration
+FIREBASE_CREDENTIALS = os.getenv("FIREBASE_CREDENTIALS")
+cred = credentials.Certificate(json.loads(FIREBASE_CREDENTIALS))
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
-# Email configuration
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD") # Use an App Password, not your real Gmail password
+# Encryption key (should be securely stored and rotated periodically)
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+fernet = Fernet(ENCRYPTION_KEY)
 
+def encrypt(data):
+    return fernet.encrypt(data.encode()).decode()
 
-def refine_email_content(content):
-    """Refine email content using Gemini API."""
-    headers = {
-        "Content-Type": "application/json"
+def decrypt(data):
+    return fernet.decrypt(data.encode()).decode()
+
+def store_user_credentials(user_id, email, password, api_key):
+    encrypted_data = {
+        "email": encrypt(email),
+        "password": encrypt(password),
+        "api_key": encrypt(api_key)
     }
-    
+    db.collection("users").document(user_id).set(encrypted_data)
+
+def get_user_credentials(user_id):
+    doc = db.collection("users").document(user_id).get()
+    if doc.exists:
+        data = doc.to_dict()
+        return {
+            "email": decrypt(data["email"]),
+            "password": decrypt(data["password"]),
+            "api_key": decrypt(data["api_key"])
+        }
+    return None
+
+def refine_email_content(content, api_key):
+    headers = {"Content-Type": "application/json"}
     data = {
-        "contents": [{"parts": [{"text": f"Refine this draft email and put name for regards as Pranav and skip the recepients name in the introduction and just put something formal: {content}"}]}]
+        "contents": [{"parts": [{"text": f"Refine this draft email and add Regards, Pranav: {content}"}]}]
     }
-
-    # ✅ Correct API Endpoint
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     try:
         response = requests.post(api_url, json=data, headers=headers)
-
-        # Debugging: Print API response
-        print("Response Status Code:", response.status_code)
-        print("Response Text:", response.text)
-
         response_data = response.json()
-
-        if "candidates" in response_data and len(response_data["candidates"]) > 0:
+        if "candidates" in response_data:
             return response_data["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            return "Error: Unexpected API response format."
-
+        return "Error: Unexpected API response format."
     except requests.exceptions.RequestException as e:
         return f"Error: {str(e)}"
 
-
-def send_email_with_attachment(to_email, subject, body, attachment_path=None):
-    """Send an email with an optional attachment."""
+def send_email(to_email, subject, body, user_email, user_password, attachment_path=None):
     msg = EmailMessage()
     msg['Subject'] = subject
-    msg['From'] = EMAIL_USER
+    msg['From'] = user_email
     msg['To'] = to_email
     msg.set_content(body)
-    
+
     # Attach file if provided
     if attachment_path and os.path.exists(attachment_path):
         with open(attachment_path, 'rb') as f:
@@ -154,9 +169,9 @@ def send_email_with_attachment(to_email, subject, body, attachment_path=None):
             file_name = os.path.basename(attachment_path)
             msg.add_attachment(file_data, maintype='application', subtype='octet-stream', filename=file_name)
     
-    # Send the email
+    # Send email
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login(EMAIL_USER, EMAIL_PASSWORD)
+        smtp.login(user_email, user_password)
         smtp.send_message(msg)
 
 user_email_data = {}
@@ -164,67 +179,64 @@ user_email_data = {}
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
     incoming_msg = request.values.get('Body', '').strip()
+    user_id = request.values.get('From', '').strip()
     media_url = request.values.get('MediaUrl0')  # Handle the first media attachment if any
-    media_filename = None
+    attachment_path = None
 
     response = MessagingResponse()
 
     if media_url:
-        # Download attachment
+        # Download and save attachment
         media_response = requests.get(media_url)
-        media_filename = "attachment_received"
-        with open(media_filename, "wb") as f:
+        attachment_path = "attachment_received"
+        with open(attachment_path, "wb") as f:
             f.write(media_response.content)
 
-    # Parse the incoming message to extract recipient, subject, and content
+    if incoming_msg.lower().startswith("register"):
+        parts = incoming_msg.split()
+        if len(parts) == 4:
+            email, password, api_key = parts[1], parts[2], parts[3]
+            store_user_credentials(user_id, email, password, api_key)
+            response.message("Registration successful! You can now send emails.")
+        else:
+            response.message("Invalid format. Use: register <email> <app_password> <gemini_api_key>")
+        return str(response)
+
+    credentials = get_user_credentials(user_id)
+    if not credentials:
+        response.message("You are not registered. Use 'register <email> <app_password> <gemini_api_key>' to register.")
+        return str(response)
+
     if "email" in incoming_msg.lower():
         parts = incoming_msg.split("content:", 1)
-        
         if len(parts) == 2:
             recipient_and_subject = parts[0].strip()
             content = parts[1].strip()
-
-            # Extract recipient and subject from the message
             recipient_match = re.search(r"to:\s*([\w\.-]+@[\w\.-]+)", recipient_and_subject)
             subject_match = re.search(r"subject:\s*(.*)", recipient_and_subject)
-            
+
             if recipient_match and subject_match:
                 recipient_email = recipient_match.group(1)
                 subject = subject_match.group(1)
-                
-                # Refine the email content using the Gemini API
-                refined_content = refine_email_content(content)
-                
-                # Send preview
+                refined_content = refine_email_content(content, credentials['api_key'])
+                user_email_data[user_id] = (recipient_email, subject, refined_content, attachment_path)
                 response.message(f"Email draft for review:\n\nSubject: {subject}\nTo: {recipient_email}\n\n{refined_content}\n\nReply with 'Send' to confirm.")
-                
-                # Store the email data temporarily (e.g., in a session or dictionary)
-                user_number = request.values.get('From', '').strip()
-                user_email_data[user_number] = (recipient_email, subject, refined_content)
                 return str(response)
             else:
-                response.message("Please provide both a valid recipient and subject in the format: 'to: email subject: subject content: content'")
+                response.message("Invalid format. Use: email to: email subject: subject content: content")
                 return str(response)
 
     elif "send" in incoming_msg.lower():
-        # Retrieve stored email data
-        user_number = request.values.get('From', '').strip()
-        if user_number in user_email_data:
-            recipient_email, subject, refined_content = user_email_data[user_number]
-            send_email_with_attachment(recipient_email, subject, refined_content, media_filename)
+        if user_id in user_email_data:
+            recipient_email, subject, refined_content, attachment_path = user_email_data[user_id]
+            send_email(recipient_email, subject, refined_content, credentials['email'], credentials['password'], attachment_path)
             response.message("Email sent successfully with attachment.")
         else:
             response.message("No email draft found. Please provide email details first.")
-
         return str(response)
 
-    else:
-        response.message("Invalid command. Please provide email details in the format: 'email to: email subject: subject content: content'")
-        return str(response)
-
+    response.message("Invalid command. Use 'register <email> <app_password> <gemini_api_key>' to register.")
+    return str(response)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
-
-
