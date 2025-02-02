@@ -166,15 +166,14 @@ def send_email(to_email, subject, body, user_email, user_password, attachment_pa
     if attachment_paths:
         for path in attachment_paths:
             if os.path.exists(path):
-                mime_type, _ = mimetypes.guess_type(path)
-                if not mime_type:
+                mime_type, encoding = mimetypes.guess_type(path)
+                if not mime_type or encoding is not None:
                     mime_type = "application/octet-stream"
                 main_type, sub_type = mime_type.split('/', 1)
 
                 with open(path, 'rb') as f:
-                    file_data = f.read()
-                
-                msg.add_attachment(file_data, maintype=main_type, subtype=sub_type, filename=os.path.basename(path))
+                    msg.add_attachment(f.read(), maintype=main_type, subtype=sub_type, filename=os.path.basename(path), cte="base64")
+
 
 
     # Send email
