@@ -143,7 +143,7 @@ def get_user_credentials(user_id):
 def refine_email_content(content, api_key):
     headers = {"Content-Type": "application/json"}
     data = {
-        "contents": [{"parts": [{"text": f"Refine this draft email, add regards, and never leave a placeholder for a name. If you don't know who the email is for, just write something gender-neutral or generic: {content}"}]}]
+        "contents": [{"parts": [{"text": f"Refine this draft email, add regards but dont put a placeholder for the name, and never leave a placeholder for any name. If you don't know who the email is for, just write something gender-neutral or generic: {content}"}]}]
     }
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     try:
@@ -167,9 +167,15 @@ def send_email(to_email, subject, body, user_email, user_password, attachment_pa
         for path in attachment_paths:
             if os.path.exists(path):
                 mime_type, _ = mimetypes.guess_type(path)
-                main_type, sub_type = mime_type.split('/') if mime_type else ('application', 'octet-stream')
+                if not mime_type:
+                    mime_type = "application/octet-stream"
+                main_type, sub_type = mime_type.split('/', 1)
+
                 with open(path, 'rb') as f:
-                    msg.add_attachment(f.read(), maintype=main_type, subtype=sub_type, filename=os.path.basename(path))
+                    file_data = f.read()
+                
+                msg.add_attachment(file_data, maintype=main_type, subtype=sub_type, filename=os.path.basename(path))
+
 
     # Send email
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
