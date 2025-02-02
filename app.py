@@ -166,20 +166,26 @@ def send_email(to_email, subject, body, user_email, user_password, attachment_pa
     if attachment_paths:
         for path in attachment_paths:
             if os.path.exists(path):
-                mime_type, encoding = mimetypes.guess_type(path)
-                if not mime_type or encoding is not None:
+                mime_type, _ = mimetypes.guess_type(path)
+                if mime_type is None:
                     mime_type = "application/octet-stream"
-                main_type, sub_type = mime_type.split('/', 1)
+                main_type, sub_type = mime_type.split("/", 1)
 
-                with open(path, 'rb') as f:
-                    msg.add_attachment(f.read(), maintype=main_type, subtype=sub_type, filename=os.path.basename(path), cte="base64")
+                with open(path, "rb") as f:
+                    file_data = f.read()
+
+                msg.add_attachment(file_data, maintype=main_type, subtype=sub_type, filename=os.path.basename(path))
 
 
 
     # Send email
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login(user_email, user_password)
-        smtp.send_message(msg)
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(user_email, user_password)
+            smtp.send_message(msg)
+        print("Email sent successfully")
+    except Exception as e:
+        print(f"Error sending email: {e}")
 
 user_email_data = {}
 
