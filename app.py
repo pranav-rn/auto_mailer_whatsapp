@@ -89,7 +89,6 @@ import os
 import requests
 import re
 import json
-import base64
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from email.message import EmailMessage
@@ -98,6 +97,7 @@ from dotenv import load_dotenv
 from cryptography.fernet import Fernet
 import firebase_admin
 from firebase_admin import credentials, firestore
+import mimetypes
 
 # Load environment variables
 load_dotenv()
@@ -143,7 +143,7 @@ def get_user_credentials(user_id):
 def refine_email_content(content, api_key):
     headers = {"Content-Type": "application/json"}
     data = {
-        "contents": [{"parts": [{"text": f"Refine this draft email and add Regards, Pranav: {content}"}]}]
+        "contents": [{"parts": [{"text": f"Refine this draft email, add regards, and never leave a placeholder for a name. If you don't know who the email is for, just write something gender-neutral or generic: {content}"}]}]
     }
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     try:
@@ -155,20 +155,22 @@ def refine_email_content(content, api_key):
     except requests.exceptions.RequestException as e:
         return f"Error: {str(e)}"
 
-def send_email(to_email, subject, body, user_email, user_password, attachment_path=None):
+def send_email(to_email, subject, body, user_email, user_password, attachment_paths=None):
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = user_email
     msg['To'] = to_email
     msg.set_content(body)
 
-    # Attach file if provided
-    if attachment_path and os.path.exists(attachment_path):
-        with open(attachment_path, 'rb') as f:
-            file_data = f.read()
-            file_name = os.path.basename(attachment_path)
-            msg.add_attachment(file_data, maintype='application', subtype='octet-stream', filename=file_name)
-    
+    # Attach all files
+    if attachment_paths:
+        for path in attachment_paths:
+            if os.path.exists(path):
+                mime_type, _ = mimetypes.guess_type(path)
+                main_type, sub_type = mime_type.split('/') if mime_type else ('application', 'octet-stream')
+                with open(path, 'rb') as f:
+                    msg.add_attachment(f.read(), maintype=main_type, subtype=sub_type, filename=os.path.basename(path))
+
     # Send email
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(user_email, user_password)
@@ -180,17 +182,22 @@ user_email_data = {}
 def whatsapp():
     incoming_msg = request.values.get('Body', '').strip()
     user_id = request.values.get('From', '').strip()
-    media_url = request.values.get('MediaUrl0')  # Handle the first media attachment if any
-    attachment_path = None
+    attachment_paths = []
 
     response = MessagingResponse()
 
-    if media_url:
-        # Download and save attachment
-        media_response = requests.get(media_url)
-        attachment_path = "attachment_received"
-        with open(attachment_path, "wb") as f:
-            f.write(media_response.content)
+    # Handle multiple attachments
+    num_media = int(request.values.get('NumMedia', 0))
+    for i in range(num_media):
+        media_url = request.values.get(f'MediaUrl{i}')
+        media_content_type = request.values.get(f'MediaContentType{i}')
+        if media_url and media_content_type:
+            ext = mimetypes.guess_extension(media_content_type) or ".bin"
+            file_path = f"attachment_{i}{ext}"
+            media_response = requests.get(media_url)
+            with open(file_path, "wb") as f:
+                f.write(media_response.content)
+            attachment_paths.append(file_path)
 
     if incoming_msg.lower().startswith("register"):
         parts = incoming_msg.split()
@@ -219,7 +226,7 @@ def whatsapp():
                 recipient_email = recipient_match.group(1)
                 subject = subject_match.group(1)
                 refined_content = refine_email_content(content, credentials['api_key'])
-                user_email_data[user_id] = (recipient_email, subject, refined_content, attachment_path)
+                user_email_data[user_id] = (recipient_email, subject, refined_content, attachment_paths)
                 response.message(f"Email draft for review:\n\nSubject: {subject}\nTo: {recipient_email}\n\n{refined_content}\n\nReply with 'Send' to confirm.")
                 return str(response)
             else:
@@ -228,9 +235,9 @@ def whatsapp():
 
     elif "send" in incoming_msg.lower():
         if user_id in user_email_data:
-            recipient_email, subject, refined_content, attachment_path = user_email_data[user_id]
-            send_email(recipient_email, subject, refined_content, credentials['email'], credentials['password'], attachment_path)
-            response.message("Email sent successfully with attachment.")
+            recipient_email, subject, refined_content, attachment_paths = user_email_data[user_id]
+            send_email(recipient_email, subject, refined_content, credentials['email'], credentials['password'], attachment_paths)
+            response.message("Email sent successfully with all attachments.")
         else:
             response.message("No email draft found. Please provide email details first.")
         return str(response)
