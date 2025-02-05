@@ -26,7 +26,7 @@ AutoMailer is an automated email-sending bot that integrates with Twilio's Whats
 ### Installation
 ```sh
 # Clone the repository
-git clone https://github.com/yourusername/auto_mailer_whatsapp.git
+git clone https://github.com/pranav-rn/auto_mailer_whatsapp.git
 cd auto_mailer_whatsapp
 
 # Install dependencies
